@@ -76,29 +76,76 @@ async def health():
 @app.post("/ask", response_model=WeatherResponse)
 async def ask_weather(query: WeatherQuery):
     try:
-        parsed_query = await try_nlp(query.query)
+        # Check for recommendation patterns FIRST, before calling NLP
+        query_lower = query.query.lower()
+        parsed_query = None
         
-        if parsed_query and parsed_query.get("confidence", 0) > 0.8:
-            if parsed_query.get("intent") == "situational":
-                if not query.user_location:
-                    return handle_situational_query(query.query)
-                else:
-                    location = query.user_location
-                    parsed_query = {
-                        "original_query": query.query,
-                        "intent": "weather",
-                        "location": location,
-                        "confidence": 0.9,
-                        "processing_method": "user_location"
-                    }
-            elif not parsed_query.get("location"):
-                parsed_query = await try_ollama(query.query)
-                if parsed_query:
-                    update_keywords_from_ollama(query.query, parsed_query)
-        else:
-            parsed_query = await try_ollama(query.query)
-            if parsed_query:
-                update_keywords_from_ollama(query.query, parsed_query)
+        if any(keyword in query_lower for keyword in ["best", "top", "recommend", "suggest"]) and "in" in query_lower:
+            if any(keyword in query_lower for keyword in ["mountain", "mountains", "peak", "peaks", "summit", "summits"]):
+                parsed_query = {
+                    "original_query": query.query,
+                    "intent": "mountain_recommendation",
+                    "location": "Nepal" if "nepal" in query_lower else None,
+                    "confidence": 0.9,
+                    "processing_method": "fallback"
+                }
+            elif any(keyword in query_lower for keyword in ["beach", "beaches", "coast", "shore", "seaside"]):
+                # Extract country from "in [country]" pattern
+                import re
+                in_pattern = r'\bin\s+([A-Za-z]+(?:\s+[A-Za-z]+)*)'
+                match = re.search(in_pattern, query.query)
+                country = match.group(1).title() if match else None
+                
+                parsed_query = {
+                    "original_query": query.query,
+                    "intent": "beach_recommendation",
+                    "location": country,
+                    "confidence": 0.9,
+                    "processing_method": "fallback"
+                }
+            elif any(keyword in query_lower for keyword in ["city", "cities", "town", "urban"]):
+                # Extract country from "in [country]" pattern
+                import re
+                in_pattern = r'\bin\s+([A-Za-z]+(?:\s+[A-Za-z]+)*)'
+                match = re.search(in_pattern, query.query)
+                country = match.group(1).title() if match else None
+                
+                parsed_query = {
+                    "original_query": query.query,
+                    "intent": "city_recommendation",
+                    "location": country,
+                    "confidence": 0.9,
+                    "processing_method": "fallback"
+                }
+        
+        # If no recommendation detected, try NLP
+        if not parsed_query:
+            parsed_query = await try_nlp(query.query)
+        
+        # Always try Ollama for keyword enrichment and better parsing
+        ollama_result = await try_ollama(query.query)
+        if ollama_result:
+            update_keywords_from_ollama(query.query, ollama_result)
+            # Use Ollama result if it has higher confidence or better intent detection
+            if not parsed_query or ollama_result.get("confidence", 0) > parsed_query.get("confidence", 0):
+                parsed_query = ollama_result
+        
+        # Handle recommendation queries first
+        if parsed_query and parsed_query.get("intent") in ["recommendation", "beach_recommendation", "city_recommendation", "mountain_recommendation"]:
+            return await handle_recommendation_query(parsed_query)
+        
+        if parsed_query and parsed_query.get("intent") == "situational":
+            if not query.user_location:
+                return handle_situational_query(query.query)
+            else:
+                location = query.user_location
+                parsed_query = {
+                    "original_query": query.query,
+                    "intent": "weather",
+                    "location": location,
+                    "confidence": 0.9,
+                    "processing_method": "user_location"
+                }
         
         # Handle recommendation queries first
         if parsed_query and parsed_query.get("intent") in ["recommendation", "beach_recommendation", "city_recommendation", "mountain_recommendation"]:
@@ -155,21 +202,60 @@ async def ask_weather(query: WeatherQuery):
         )
 
 def handle_situational_query(query: str) -> WeatherResponse:
+    query_lower = query.lower()
+    
+    # Provide more logical suggestions based on the query type
+    if any(keyword in query_lower for keyword in ["mountain", "mountains", "peak", "peaks", "summit"]):
+        suggestions = [
+            "Tell me your location to find nearby mountains",
+            "Or ask about specific mountains (e.g., 'Weather at Everest Base Camp')",
+            "Or ask about mountains in a country (e.g., 'Mountains in Nepal weather')"
+        ]
+    elif any(keyword in query_lower for keyword in ["beach", "beaches", "coast", "shore"]):
+        suggestions = [
+            "Tell me your location to find nearby beaches", 
+            "Or ask about specific beaches (e.g., 'Weather at Miami Beach')",
+            "Or ask about beaches in a country (e.g., 'Beaches in Spain weather')"
+        ]
+    elif any(keyword in query_lower for keyword in ["city", "cities", "town"]):
+        suggestions = [
+            "Tell me your location to find nearby cities",
+            "Or ask about specific cities (e.g., 'Weather in Paris')",
+            "Or ask about cities in a country (e.g., 'Cities in Italy weather')"
+        ]
+    else:
+        suggestions = [
+            "Tell me your current location",
+            "Or ask about a specific place (e.g., 'Weather in Paris')",
+            "Or ask about places in a region (e.g., 'Best places in Europe')"
+        ]
+    
     return WeatherResponse(
         response="I would love to help you find that place! To give you accurate weather information, could you tell me your current city or location?",
         status="location_required",
         parsed_query={"original_query": query, "intent": "situational_recommendation"},
         processing_method="situational",
         requires_location=True,
-        suggested_actions=[
-            "Tell me your city (e.g., 'I'm in Miami')",
-            "Or ask about a specific city (e.g., 'Best places in Barcelona')"
-        ]
+        suggested_actions=suggestions
     )
 
 async def handle_recommendation_query(parsed_query: Dict[str, Any]) -> WeatherResponse:
     intent = parsed_query.get("intent", "recommendation")
     location = parsed_query.get("location", "Unknown")
+    original_query = parsed_query.get("original_query", "").lower()
+    
+    # If location is empty but we can detect it from the query, extract it
+    if not location or location == "Unknown":
+        if "nepal" in original_query:
+            location = "Nepal"
+        elif "switzerland" in original_query:
+            location = "Switzerland"
+        elif "france" in original_query:
+            location = "France"
+        elif "italy" in original_query:
+            location = "Italy"
+        elif "spain" in original_query:
+            location = "Spain"
     
     recommendation_type = "beach" if "beach" in intent else "city" if "city" in intent else "mountain" if "mountain" in intent else "place"
     
@@ -188,10 +274,18 @@ async def handle_recommendation_query(parsed_query: Dict[str, Any]) -> WeatherRe
             "Spain": ["Teide", "Mulhacén", "Aneto", "Pico de Europa", "Nevado"],
             "spain": ["Teide", "Mulhacén", "Aneto", "Pico de Europa", "Nevado"],
             "Austria": ["Grossglockner", "Zugspitze", "Kitzbühel", "Innsbruck", "Salzburg"],
-            "austria": ["Grossglockner", "Zugspitze", "Kitzbühel", "Innsbruck", "Salzburg"]
+            "austria": ["Grossglockner", "Zugspitze", "Kitzbühel", "Innsbruck", "Salzburg"],
+            "Nepal": ["Mount Everest", "K2", "Makalu", "Cho Oyu", "Lhotse"],
+            "nepal": ["Mount Everest", "K2", "Makalu", "Cho Oyu", "Lhotse"]
         }
         if location in mountain_fallback:
             locations = mountain_fallback[location]
+        elif not location or location == "Unknown":
+            # If no specific location, try to detect from the original query
+            original_query = parsed_query.get("original_query", "").lower()
+            if "nepal" in original_query:
+                locations = ["Mount Everest", "K2", "Makalu", "Cho Oyu", "Lhotse"]
+                location = "Nepal"  # Set the location for display
     
     if not locations:
         return WeatherResponse(

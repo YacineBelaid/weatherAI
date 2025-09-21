@@ -7,6 +7,18 @@ import json
 import os
 import re
 
+# INTERFACES
+class QueryRequest(BaseModel):
+    query: str
+
+class QueryResponse(BaseModel):
+    original_query: str
+    intent: str
+    location: Optional[str] = None
+    confidence: float
+    processing_method: str
+
+
 logger = structlog.get_logger()
 app = FastAPI()
 
@@ -18,19 +30,34 @@ def load_dynamic_keywords() -> Dict[str, List[str]]:
     except:
         pass
     return {
-        "situational": ["where", "best place", "worst place", "should go", "can go"],
-        "weather": ["weather", "temperature", "forecast", "rain", "sunny"]
+        "situational": ["where", "should go", "can go", "where to", "recommend me"],
+        "weather": ["weather", "temperature", "forecast", "rain", "sunny"],
+        "recommendation": ["best", "top", "recommend", "suggest", "favorite", "popular"],
+        "location": ["beach", "coast", "shore", "seaside", "ocean", "sea", "coastal", "mountain", "peak", "summit", "hill", "alpine", "hiking", "climbing", "city", "town", "urban", "metropolitan", "downtown", "capital", "village", "resort", "park", "forest", "lake", "river", "island", "peninsula", "valley", "desert", "canyon", "volcano", "glacier", "waterfall", "cave", "monument", "landmark", "attraction", "destination"]
     }
 
-class QueryRequest(BaseModel):
-    query: str
+def save_dynamic_keywords(keywords: Dict[str, List[str]]):
+    try:
+        with open("dynamic_keywords.json", 'w') as f:
+            json.dump(keywords, f)
+    except:
+        pass
 
-class QueryResponse(BaseModel):
-    original_query: str
-    intent: str
-    location: Optional[str] = None
-    confidence: float
-    processing_method: str
+async def enrich_keywords_with_ollama():
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post("http://localhost:8002/enrich_keywords", json={})
+            if response.status_code == 200:
+                enriched = response.json()
+                current = load_dynamic_keywords()
+                for category, keywords in enriched.items():
+                    if category in current:
+                        current[category].extend(keywords)
+                        current[category] = list(set(current[category]))
+                save_dynamic_keywords(current)
+    except:
+        pass
 
 try:
     nlp = spacy.load("en_core_web_sm")
@@ -68,14 +95,22 @@ def parse_query_text(query: str) -> Dict[str, Any]:
     confidence = 0.5
     query_lower = query.lower()
     
-    if "best" in query_lower and "in" in query_lower:
+    dynamic_keywords = load_dynamic_keywords()
+    
+    # Check for recommendation patterns FIRST: "best [type] in [country]"
+    if any(keyword in query_lower for keyword in dynamic_keywords.get("recommendation", [])) and "in" in query_lower:
         recommendation_type = None
-        if "city" in query_lower or "cities" in query_lower:
-            recommendation_type = "city"
-        elif "beach" in query_lower or "beaches" in query_lower:
+        location_keywords = dynamic_keywords.get("location", [])
+        
+        # Detect specific location types based on keywords
+        if any(keyword in query_lower for keyword in ["beach", "coast", "shore", "seaside", "ocean", "sea", "coastal", "beaches"]):
             recommendation_type = "beach"
-        elif "mountain" in query_lower or "mountains" in query_lower:
+        elif any(keyword in query_lower for keyword in ["mountain", "peak", "summit", "hill", "alpine", "hiking", "climbing", "mountains", "peaks", "summits"]):
             recommendation_type = "mountain"
+        elif any(keyword in query_lower for keyword in ["city", "town", "urban", "metropolitan", "downtown", "capital", "cities"]):
+            recommendation_type = "city"
+        elif any(keyword in query_lower for keyword in location_keywords):
+            recommendation_type = "place"
         elif "place" in query_lower or "places" in query_lower:
             recommendation_type = "place"
         
@@ -92,9 +127,8 @@ def parse_query_text(query: str) -> Dict[str, Any]:
                 "country": match.group(1)
             }
     
-    dynamic_keywords = load_dynamic_keywords()
-    situational_keywords = dynamic_keywords.get("situational", ["where", "best place"])
-    if any(keyword in query_lower for keyword in situational_keywords) and not ("best" in query_lower and "in" in query_lower):
+    situational_keywords = dynamic_keywords.get("situational", ["where", "should go", "can go"])
+    if any(keyword in query_lower for keyword in situational_keywords) and not any(keyword in query_lower for keyword in dynamic_keywords.get("recommendation", [])):
         return {
             "original_query": query,
             "intent": "situational",
@@ -145,6 +179,32 @@ def parse_query_text(query: str) -> Dict[str, Any]:
         "confidence": confidence,
         "processing_method": "spacy"
     }
+
+@app.post("/parse", response_model=QueryResponse)
+async def parse_query(request: QueryRequest):
+    try:
+        await enrich_keywords_with_ollama()
+        result = parse_query_text(request.query)
+        return QueryResponse(**result)
+    except Exception as e:
+        logger.error("Error parsing query", query=request.query, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Error parsing query: {str(e)}")
+
+@app.post("/update_keywords")
+async def update_keywords(keywords: Dict[str, List[str]]):
+    try:
+        current = load_dynamic_keywords()
+        for category, new_keywords in keywords.items():
+            if category in current:
+                current[category].extend(new_keywords)
+                current[category] = list(set(current[category]))
+            else:
+                current[category] = new_keywords
+        save_dynamic_keywords(current)
+        return {"status": "updated", "keywords": current}
+    except Exception as e:
+        logger.error("Error updating keywords", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Error updating keywords: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
