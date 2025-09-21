@@ -262,6 +262,8 @@ async def handle_recommendation_query(parsed_query: Dict[str, Any]) -> WeatherRe
     query_text = f"Famous mountains in {location}" if recommendation_type == "mountain" else f"Best {recommendation_type}s in {location}"
     recommendations = await get_recommendations_from_ollama(query_text)
     locations = recommendations.get("locations", [])
+    print(f"DEBUG: Ollama recommendations: {recommendations}")
+    print(f"DEBUG: Locations from Ollama: {locations}")
     
     if recommendation_type == "mountain":
         mountain_fallback = {
@@ -286,10 +288,30 @@ async def handle_recommendation_query(parsed_query: Dict[str, Any]) -> WeatherRe
             if "nepal" in original_query:
                 locations = ["Mount Everest", "K2", "Makalu", "Cho Oyu", "Lhotse"]
                 location = "Nepal"  # Set the location for display
+    elif recommendation_type == "beach":
+        beach_fallback = {
+            "Spain": ["Costa Brava", "Costa del Sol", "Costa Blanca", "Ibiza", "Mallorca"],
+            "spain": ["Costa Brava", "Costa del Sol", "Costa Blanca", "Ibiza", "Mallorca"],
+            "France": ["Nice", "Cannes", "Saint-Tropez", "Monaco", "Antibes"],
+            "france": ["Nice", "Cannes", "Saint-Tropez", "Monaco", "Antibes"],
+            "Italy": ["Sardinia", "Sicily", "Amalfi Coast", "Cinque Terre", "Rimini"],
+            "italy": ["Sardinia", "Sicily", "Amalfi Coast", "Cinque Terre", "Rimini"]
+        }
+        if location in beach_fallback:
+            locations = beach_fallback[location]
+        elif not location or location == "Unknown":
+            # If no specific location, try to detect from the original query
+            original_query = parsed_query.get("original_query", "").lower()
+            if "spain" in original_query:
+                locations = ["Costa Brava", "Costa del Sol", "Costa Blanca", "Ibiza", "Mallorca"]
+                location = "Spain"
     
     if not locations:
+        print(f"DEBUG: No locations found for {recommendation_type} in {location}")
+        print(f"DEBUG: Original query: {original_query}")
+        print(f"DEBUG: Parsed query: {parsed_query}")
         return WeatherResponse(
-            response=f"Sorry, I couldn't find recommendations for {recommendation_type}s in {location}.",
+            response=f"Sorry, I couldn't find recommendations for {recommendation_type}es in {location}." if recommendation_type == "beach" else f"Sorry, I couldn't find recommendations for {recommendation_type}s in {location}.",
             status="error",
             parsed_query=parsed_query,
             processing_method="ollama"
@@ -314,7 +336,7 @@ async def handle_recommendation_query(parsed_query: Dict[str, Any]) -> WeatherRe
     
     if not weather_results:
         return WeatherResponse(
-            response=f"Sorry, I couldn't get weather data for the recommended {recommendation_type}s in {location}.",
+            response=f"Sorry, I couldn't get weather data for the recommended {recommendation_type}es in {location}." if recommendation_type == "beach" else f"Sorry, I couldn't get weather data for the recommended {recommendation_type}s in {location}.",
             status="error",
             parsed_query=parsed_query,
             processing_method="playwright"
@@ -364,7 +386,7 @@ async def try_ollama(query: str) -> Optional[Dict[str, Any]]:
 async def try_playwright(parsed_query: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post("http://localhost:8008/weather", json=parsed_query)
+            response = await client.post("http://localhost:8003/weather", json=parsed_query)
             if response.status_code == 200:
                 return response.json()
     except:
