@@ -10,6 +10,7 @@ def start_backend():
         ("NLP Service", "python backend/NLPService/app.py"),
         ("Ollama Service", "python backend/OllamaService/app.py"),
         ("Playwright Service", "python backend/PlaywrightWeatherService/app.py"),
+        ("Google Calendar Service", "python backend/GoogleCalendarService/app.py"),
         ("Main Service", "python backend/MainService/app.py")
     ]
     
@@ -29,7 +30,8 @@ def start_backend():
     print("Main Service: http://localhost:8000")
     print("NLP Service: http://localhost:8001")
     print("Ollama Service: http://localhost:8002")
-    print("Playwright Service: http://localhost:8008")
+    print("Playwright Service: http://localhost:8003")
+    print("Google Calendar Service: http://localhost:8005")
     print("\nPress Ctrl+C to stop all services")
     
     try:

@@ -178,8 +178,15 @@ async def ask_weather(query: WeatherQuery):
         
         weather_data = await try_playwright(parsed_query)
         
+        # Try to get calendar information
+        calendar_data = None
+        if location:
+            from datetime import datetime
+            today = datetime.now().strftime("%Y-%m-%d")
+            calendar_data = await try_google_calendar(location, today)
+        
         if weather_data and weather_data.get("success"):
-            response_text = format_response(weather_data, parsed_query)
+            response_text = format_response(weather_data, parsed_query, calendar_data)
             status = "success"
         else:
             response_text = f"Sorry, I couldn't get weather data for {location}"
@@ -393,7 +400,21 @@ async def try_playwright(parsed_query: Dict[str, Any]) -> Optional[Dict[str, Any
         pass
     return None
 
-def format_response(weather_data: Dict[str, Any], parsed_query: Dict[str, Any]) -> str:
+async def try_google_calendar(location: str, date: str = None) -> Optional[Dict[str, Any]]:
+    """Get calendar information from Google Calendar service"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post("http://localhost:8005/calendar", json={
+                "location": location,
+                "date": date
+            })
+            if response.status_code == 200:
+                return response.json()
+    except:
+        pass
+    return None
+
+def format_response(weather_data: Dict[str, Any], parsed_query: Dict[str, Any], calendar_data: Dict[str, Any] = None) -> str:
     location = weather_data.get("location", "Unknown")
     response_parts = [f"Here's the weather for {location}:"]
     
@@ -402,6 +423,17 @@ def format_response(weather_data: Dict[str, Any], parsed_query: Dict[str, Any]) 
     
     if weather_data.get("condition") and weather_data["condition"] != "N/A" and weather_data["condition"] != "Unknown":
         response_parts.append(f"☁️ Condition: {weather_data['condition']}")
+    
+    # Add calendar information if available
+    if calendar_data and calendar_data.get("success"):
+        availability = calendar_data.get("availability", {})
+        if availability.get("available"):
+            free_slots = availability.get("free_slots", [])
+            if free_slots:
+                slots_text = ", ".join([f"{slot['start']}-{slot['end']}" for slot in free_slots[:3]])
+                response_parts.append(f"📅 Available times: {slots_text}")
+        else:
+            response_parts.append("📅 No free time available today")
     
     return " ".join(response_parts)
 

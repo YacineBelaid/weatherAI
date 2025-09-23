@@ -18,7 +18,7 @@ class QueryResponse(BaseModel):
     confidence: float
     processing_method: str
 
-OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_BASE_URL = "http://localhost:11434" ## check your ollama port and change accordingly
 OLLAMA_MODEL = "llama3.2:latest"
 
 @app.get("/health")
